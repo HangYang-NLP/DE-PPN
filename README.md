@@ -11,15 +11,15 @@ Table of Contents
 Code for the paper ["Document-level Event Extraction via Parallel Prediction Networks"](https://aclanthology.org/2021.acl-long.492/).
 
 <p align="center">
-  <img src="./overview.pdf" alt="Photo" style="width="100%;"/>
+  <img src="./overview.png" alt="Photo" style="width="100%;"/>
 </p>
 
 ## Dependencies 
 - pytorch=1.6 
 - transformers=3.1.0
--tensorboardX
--numpy
--tqdm
+- tensorboardX
+- numpy
+- tqdm
 
 ## Datasets
 - ChFinAnn (Access from [https://github.com/dolphin-zs/Doc2EDAG/blob/master/Data.zip]. Data preprocessing, sentence-level extraction and evaluation metrics following Doc2EDAG[https://github.com/dolphin-zs/Doc2EDAG]).
