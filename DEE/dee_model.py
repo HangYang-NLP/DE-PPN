@@ -441,15 +441,15 @@ class SetPre4DEEModel(nn.Module):
                 doc_span_info, event_idx2event_decode_paths
 
         batch_span_context = torch.cat(span_context_list, dim=0)
-        event_pred_list = self.get_event_cls_info(doc_sent_context, doc_fea, train_flag=True)
+        event_pred_list = self.get_event_cls_info(doc_sent_context, doc_fea, train_flag=False)
+        pred_event_list = []
         for event_idx, event_pred in enumerate(event_pred_list):
             if event_pred != 0:
                 outputs, targets = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag=False)
                 pred_event = outputs["pred_doc_event_logps"].softmax(-1).argmax(-1)  # [num_sets,event_types]
                 pred_role = outputs["pred_role_logits"].softmax(-1).argmax(-1)  # [num_sets,num_roles,num_etities]
-                gold_event = event_type_idxs_list
-                gold_role = event_arg_idxs_objs_list
-                return pred_event, gold_event, pred_role, gold_role, len(span_context_list)
+                pred_event_list.append([event_idx, pred_event, pred_role])
+        return pred_event_list
 
     def adjust_token_label(self, doc_token_labels_list):
         if self.config.use_token_role:  # do not use detailed token
