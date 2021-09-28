@@ -282,107 +282,12 @@ class SetPre4DEEModel(nn.Module):
             doc_event_pred_list = doc_event_logps.argmax(dim=-1).tolist()
             return doc_event_pred_list
 
-    def get_field_cls_info(self, event_idx, field_idx, batch_span_emb,
-                           batch_span_label=None, train_flag=True):
-        batch_span_logp = self.get_field_pred_logp(event_idx, field_idx, batch_span_emb)
-
-        if train_flag:
-            assert batch_span_label is not None
-            device = batch_span_logp.device
-            data_type = batch_span_logp.dtype
-            # to prevent too many FPs
-            class_weight = torch.tensor(
-                [self.config.neg_field_loss_scaling, 1.0], device=device, dtype=data_type, requires_grad=False
-            )
-            field_cls_loss = F.nll_loss(batch_span_logp, batch_span_label, weight=class_weight, reduction='sum')
-            return field_cls_loss, batch_span_logp
-        else:
-            span_pred_list = batch_span_logp.argmax(dim=-1).tolist()
-            return span_pred_list, batch_span_logp
-
-    def get_field_pred_logp(self, event_idx, field_idx, batch_span_emb, include_prob=False):
-        event_table = self.event_tables[event_idx]
-        batch_span_logp = event_table(batch_span_emb=batch_span_emb, field_idx=field_idx)
-
-        if include_prob:
-            # used for decision sampling, is not inside the computation graph
-            batch_span_prob = batch_span_logp.detach().exp()
-            return batch_span_logp, batch_span_prob
-        else:
-            return batch_span_logp
-
     def get_none_span_context(self, init_tensor):
         none_span_context = torch.zeros(
             1, self.config.hidden_size,
             device=init_tensor.device, dtype=init_tensor.dtype, requires_grad=False
         )
         return none_span_context
-
-    def conduct_field_level_reasoning(self, event_idx, field_idx, prev_decode_context, batch_span_context):
-        event_table = self.event_tables[event_idx]
-        field_query = event_table.field_queries[field_idx]
-        num_spans = batch_span_context.size(0)
-        # make the model to be aware of which field
-        batch_cand_emb = batch_span_context + field_query
-        if self.config.use_path_mem:
-            # [1, num_spans + valid_sent_num, hidden_size]
-            total_cand_emb = torch.cat([batch_cand_emb, prev_decode_context], dim=0).unsqueeze(0)
-            # use transformer to do the reasoning
-            total_cand_emb = self.field_context_encoder(total_cand_emb, None).squeeze(0)
-            batch_cand_emb = total_cand_emb[:num_spans, :]
-        # TODO: what if reasoning over reasoning context
-        return batch_cand_emb, prev_decode_context
-
-    def get_field_mle_loss_list(self, doc_sent_context, batch_span_context,
-                                event_idx, field_idx2pre_path2cur_span_idx_set):
-        field_mle_loss_list = []
-        num_fields = self.event_tables[event_idx].num_fields
-        num_spans = batch_span_context.size(0)
-        prev_path2prev_decode_context = {
-            (): doc_sent_context
-        }
-
-        for field_idx in range(num_fields):
-            prev_path2cur_span_idx_set = field_idx2pre_path2cur_span_idx_set[field_idx]
-            for prev_path, cur_span_idx_set in prev_path2cur_span_idx_set.items():
-                if prev_path not in prev_path2prev_decode_context:
-                    # note that when None and valid_span co-exists, ignore None paths during training
-                    continue
-                # get decoding context
-                prev_decode_context = prev_path2prev_decode_context[prev_path]
-                # conduct reasoning on this field
-                batch_cand_emb, prev_decode_context = self.conduct_field_level_reasoning(
-                    event_idx, field_idx, prev_decode_context, batch_span_context
-                )
-                # prepare label for candidate spans
-                batch_span_label = get_batch_span_label(
-                    num_spans, cur_span_idx_set, batch_span_context.device
-                )
-                # calculate loss
-                cur_field_cls_loss, batch_span_logp = self.get_field_cls_info(
-                    event_idx, field_idx, batch_cand_emb,
-                    batch_span_label=batch_span_label, train_flag=True
-                )
-
-                field_mle_loss_list.append(cur_field_cls_loss)
-
-                # cur_span_idx_set needs to ensure at least one element, None
-                for span_idx in cur_span_idx_set:
-                    # Teacher-forcing Style Training
-                    if span_idx is None:
-                        span_context = self.event_tables[event_idx].field_queries[field_idx]
-                    else:
-                        # TODO: add either batch_cand_emb or batch_span_context to the memory tensor
-                        span_context = batch_cand_emb[span_idx].unsqueeze(0)
-
-                    cur_path = prev_path + (span_idx, )
-                    if self.config.use_path_mem:
-                        cur_decode_context = torch.cat([prev_decode_context, span_context], dim=0)
-                        prev_path2prev_decode_context[cur_path] = cur_decode_context
-                    else:
-                        prev_path2prev_decode_context[cur_path] = prev_decode_context
-
-        return field_mle_loss_list
 
     def get_loss_on_doc(self, doc_token_emb, doc_sent_emb, doc_fea, doc_span_info):
         span_context_list, doc_sent_context = self.get_doc_span_sent_context(
@@ -396,7 +301,7 @@ class SetPre4DEEModel(nn.Module):
         event_type_list = doc_fea.event_type_labels
         for event_idx, event_type in enumerate(event_type_list):
             if event_type != 0:
-                set_pred_loss, outputs = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx,train_flag = True)
+                set_pred_loss, outputs = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag = True)
                 event_set_pred_loss += set_pred_loss
         return event_set_pred_loss, event_cls_loss
 
@@ -445,7 +350,7 @@ class SetPre4DEEModel(nn.Module):
         pred_event_list = []
         for event_idx, event_pred in enumerate(event_pred_list):
             if event_pred != 0:
-                outputs, targets = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag=False)
+                outputs = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag=False)
                 pred_event = outputs["pred_doc_event_logps"].softmax(-1).argmax(-1)  # [num_sets,event_types]
                 pred_role = outputs["pred_role_logits"].softmax(-1).argmax(-1)  # [num_sets,num_roles,num_etities]
                 pred_event_list.append([event_idx, pred_event, pred_role])
