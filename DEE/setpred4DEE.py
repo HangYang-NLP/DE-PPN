@@ -100,9 +100,9 @@ class SetPred4DEE(nn.Module):
 
         ### event type classification (no-None or None)
         pred_doc_event_logps = self.event_cls(hidden_states).squeeze(0)
-        event_type_idxs_list = doc_span_info.pred_event_type_idxs_list[:self.num_generated_sets]
+        event_type_idxs_list = doc_span_info.pred_event_type_idxs_list[event_type_pred][:self.num_generated_sets]
 
-        event_arg_idxs_objs_list = doc_span_info.pred_event_arg_idxs_objs_list[:self.num_generated_sets]
+        event_arg_idxs_objs_list = doc_span_info.pred_event_arg_idxs_objs_list[event_type_pred][:self.num_generated_sets]
         event_index2role_list = [self.event_type2role_index_list[event_type_pred]]
         event_index2role_index_tensor = torch.tensor(event_index2role_list, dtype=torch.long, requires_grad=False).to(self.device)
         num_roles = len(event_index2role_list[0])
