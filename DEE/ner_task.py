@@ -79,47 +79,6 @@ class NERExample(object):
         )
         return ex_str
 
-
-def load_ner_dataset_1(dataset_json_path):
-    total_ner_examples = []
-    annguid2detail_align_info = default_load_json(dataset_json_path)
-    for annguid, detail_align_info in annguid2detail_align_info:
-        sents = detail_align_info['sentences']
-        ann_valid_mspans = detail_align_info['ann_valid_mspans']
-        ann_valid_dranges = detail_align_info['ann_valid_dranges']
-        ann_mspan2guess_field = detail_align_info['ann_mspan2guess_field']
-        # assert len(ann_valid_dranges) == len(ann_valid_mspans)
-        recguid_eventname_eventdict_list = detail_align_info['recguid_eventname_eventdict_list']
-        event_type = recguid_eventname_eventdict_list[0][1]
-        sent_idx2mrange_mspan_mfield_tuples = {}
-        for drange, mspan in zip(ann_valid_dranges, ann_valid_mspans):
-            sent_idx, char_s, char_e = drange
-            sent_mrange = (char_s, char_e)
-
-            sent_text = sents[sent_idx]
-            # print(sent_text[char_s: char_e], mspan)
-            # assert sent_text[char_s: char_e] == mspan
-
-            guess_field = ann_mspan2guess_field[mspan]
-
-            if sent_idx not in sent_idx2mrange_mspan_mfield_tuples:
-                sent_idx2mrange_mspan_mfield_tuples[sent_idx] = []
-            sent_idx2mrange_mspan_mfield_tuples[sent_idx].append((sent_mrange, mspan, guess_field))
-
-        for sent_idx in range(len(sents)):
-            sent_text = sents[sent_idx]
-            if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
-                mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
-            else:
-                mrange_mspan_mfield_tuples = []
-            if event_type == 'EquityFreeze':
-                total_ner_examples.append(
-                    NERExample('{}-{}'.format(annguid, sent_idx),
-                               sent_text,
-                               mrange_mspan_mfield_tuples)
-                )
-    return total_ner_examples
-
 def load_ner_dataset(dataset_json_path):
     total_ner_examples = []
     annguid2detail_align_info = default_load_json(dataset_json_path)
@@ -148,19 +107,17 @@ def load_ner_dataset(dataset_json_path):
                     sent_idx2mrange_mspan_mfield_tuples[sent_idx] = []
                 sent_idx2mrange_mspan_mfield_tuples[sent_idx].append((sent_mrange, mspan, guess_field))
 
-        if event_type == 'EquityPledge':
-            for sent_idx in range(len(sents)):
-                sent_text = sents[sent_idx]
-                if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
-                    mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
-                else:
-                    mrange_mspan_mfield_tuples = []
-
-                total_ner_examples.append(
-                    NERExample('{}-{}'.format(annguid, sent_idx),
-                               sent_text,
-                               mrange_mspan_mfield_tuples)
-                )
+        for sent_idx in range(len(sents)):
+            sent_text = sents[sent_idx]
+            if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
+                mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
+            else:
+                mrange_mspan_mfield_tuples = []
+            total_ner_examples.append(
+                NERExample('{}-{}'.format(annguid, sent_idx),
+                           sent_text,
+                           mrange_mspan_mfield_tuples)
+            )
     return total_ner_examples
 
 
