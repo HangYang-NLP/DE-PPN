@@ -1,8 +1,3 @@
-# -*- coding: utf-8 -*-
-# AUTHOR: Hang Yang
-# DATE: 21-7-19
-
-
 class BaseEvent(object):
     def __init__(self, fields, event_name='Event', key_fields=(), recguid=None):
         self.recguid = recguid

@@ -1,11 +1,7 @@
-# -*- coding: utf-8 -*-
-# AUTHOR: Hang Yang
-# DATE: 21-7-11
-
 import json
 import logging
 import pickle
-from pytorch_pretrained_bert import BertTokenizer
+from transformers.models.bert import BertTokenizer
 
 
 logger = logging.getLogger(__name__)
@@ -26,7 +22,7 @@ def default_dump_result_json(obj, json_file_path, encoding='utf-8', ensure_ascii
                   **kwargs)
 
 def default_dump_json(obj, json_file_path, encoding='utf-8', ensure_ascii=False, indent=2, **kwargs):
-    with open(json_file_path, 'a', encoding=encoding) as fout:
+    with open(json_file_path, 'w', encoding=encoding) as fout:
         json.dump(obj, fout,
                   ensure_ascii=ensure_ascii,
                   indent=indent,
@@ -54,8 +50,8 @@ def set_basic_log_config():
 class BERTChineseCharacterTokenizer(BertTokenizer):
     """Customized tokenizer for Chinese financial announcements"""
 
-    def __init__(self, vocab_file, do_lower_case=True):
-        super(BERTChineseCharacterTokenizer, self).__init__(vocab_file, do_lower_case)
+    def __init__(self, vocab_file, do_lower_case=True, **kwargs):
+        super().__init__(vocab_file, do_lower_case, **kwargs)
 
     def char_tokenize(self, text, unk_token='[UNK]'):
         """perform pure character-based tokenization"""
@@ -94,5 +90,3 @@ def strtobool(str_val):
         return False
     else:
         raise ValueError("invalid truth value %r" % (str_val,))
-
-

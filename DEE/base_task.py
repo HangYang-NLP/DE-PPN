@@ -1,6 +1,3 @@
-# -*- coding: utf-8 -*-
-# AUTHOR: Hang Yang
-# DATE: 21-7-11
 # Code Reference: pytorch-pretrained-bert (https://github.com/huggingface/pytorch-transformers)
 
 import logging
@@ -16,7 +13,8 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 import torch.nn.parallel as para
 from pytorch_pretrained_bert.optimization import BertAdam
-from transformers import AdamW
+
+from transformers import AdamW, get_linear_schedule_with_warmup
 
 from tqdm import trange, tqdm
 from tensorboardX import SummaryWriter
@@ -50,7 +48,7 @@ class TaskSetting(object):
         ('max_seq_len', 128),
         ('train_batch_size', 32),
         ('eval_batch_size', 1),
-        ('learning_rate', 1e-5),
+        ('learning_rate', 1e-4),
         ('num_train_epochs', 30.0),
         ('warmup_proportion', 0.1),
         ('no_cuda', False),
@@ -171,9 +169,10 @@ class BasePytorchTask(object):
         # (option) self.resume_checkpoint()
         self.model_save = True
         self.evaluation = True
-        self.model_save_path = "params_pledge.pkl"
+        # self.model_save_path = "params_pledge.pkl"
         self.load_model = True
 
+        # self.best_micro_f1 = -0.0
 
     def logging(self, msg, level=logging.INFO):
         if self.in_distributed_mode():
@@ -358,7 +357,8 @@ class BasePytorchTask(object):
             if self.in_distributed_mode():
                 self.model = para.DistributedDataParallel(self.model,
                                                           device_ids=[self.setting.local_rank],
-                                                          output_device=self.setting.local_rank)
+                                                          output_device=self.setting.local_rank,
+                                                          find_unused_parameters=True)
                 self.logging('Wrap distributed data parallel')
                 # self.logging('In Distributed Mode, but do not use DistributedDataParallel Wrapper')
             elif self.n_gpu > 1:
@@ -382,17 +382,36 @@ class BasePytorchTask(object):
                                       for n, param in self.model.named_parameters()]
         else:
             model_named_parameters = list(self.model.named_parameters())
+
         no_decay = ['bias', 'gamma', 'beta']
+        component = ['encoder', 'decoder']
         optimizer_grouped_parameters = [
             {
-                'params': [p for n, p in model_named_parameters if n not in no_decay],
-                'weight_decay_rate': 0.01
+                'params': [p for n, p in model_named_parameters if n not in no_decay and component[1] not in n],
+                'weight_decay_rate': 0.01,
+                'lr': self.setting.learning_rate
             },
             {
-                'params': [p for n, p in model_named_parameters if n in no_decay],
-                'weight_decay_rate': 0.0
+                'params': [p for n, p in model_named_parameters if n in no_decay and component[1] not in n],
+                'weight_decay_rate': 0.0,
+                'lr': self.setting.learning_rate
+            },
+            {
+                'params': [p for n, p in model_named_parameters if n not in no_decay and component[1] in n],
+                'weight_decay_rate': 0.01,
+                'lr': self.setting.decoder_lr
+            },
+            {
+                'params': [p for n, p in model_named_parameters if n in no_decay and component[1] in n],
+                'weight_decay_rate': 0.0,
+                'lr': self.setting.decoder_lr
             }
         ]
+
+        # for n, p in model_named_parameters:
+        #     if 'ner_model' in n:
+        #         p.requires_grad = False
+        # self.model.ner_model.requires_grad = False
 
         num_train_steps = int(len(self.train_examples)
                               / self.setting.train_batch_size
@@ -400,12 +419,13 @@ class BasePytorchTask(object):
                               * self.setting.num_train_epochs)
 
         # optimizer = BertAdam(optimizer_grouped_parameters,
-        #                      lr=self.setting.learning_rate,
         #                      warmup=self.setting.warmup_proportion,
         #                      t_total=num_train_steps)
-        optimizer = AdamW(optimizer_grouped_parameters, lr=self.setting.learning_rate)
-        # optimizer = RAdam(optimizer_grouped_parameters, lr=self.setting.learning_rate)
 
+        optimizer = AdamW(optimizer_grouped_parameters)
+        # scheduler = get_linear_schedule_with_warmup(
+        #     optimizer, self.setting.warmup_proportion * num_train_steps, num_train_steps
+        # )
         return optimizer, num_train_steps, model_named_parameters
 
     def prepare_data_loader(self, dataset, batch_size, rand_flag=True):
@@ -587,14 +607,7 @@ class BasePytorchTask(object):
             if epoch_eval_func is not None:
                 epoch_eval_func(self, epoch_idx + 1, **kwargs_dict2)
 
-            ## for SEE
-            # f1_socre = eval_function(self.test_dataset)
-            # if f1_socre > best_f1:
-            #     best_f1 = f1_socre
-            #     if self.model_save:
-            #         torch.save(self.model.state_dict(), self.model_save_path)
-
-    def base_eval(self, eval_dataset, get_info_on_batch, load_model = False, reduce_info_type='mean',dump_pkl_path=None, **func_kwargs):
+    def base_eval(self, eval_dataset, get_info_on_batch, load_model = False, reduce_info_type='mean', dump_pkl_path=None, **func_kwargs):
         self.logging('='*20 + 'Start Base Evaluation' + '='*20)
         self.logging("\tNum examples = {}".format(len(eval_dataset)))
         self.logging("\tBatch size = {}".format(self.setting.eval_batch_size))
@@ -608,12 +621,9 @@ class BasePytorchTask(object):
 
         # enter eval mode
         total_info = []
-        # if load_model:
-        #     self.model.load_state_dict(torch.load(self.model_save_path))
         if self.model is not None:
             self.model.eval()
-        # for name, param in self.model.named_parameters():
-        #     print(name)
+
         iter_desc = 'Iteration'
         if self.in_distributed_mode():
             iter_desc = 'Rank {} {}'.format(dist.get_rank(), iter_desc)
@@ -747,7 +757,6 @@ class BasePytorchTask(object):
                 raise Exception('Resume optimizer failed, dict.keys = {}'.format(store_dict.keys()))
         else:
             self.logging('Do not resume optimizer')
-
 
 def average_gradients(model):
     """ Gradient averaging. """

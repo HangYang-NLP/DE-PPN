@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
-# DATE: 21-7-11
-
 import torch
 from torch import nn
 import torch.nn.functional as F
 import math
 
-from transformers import BertModel, BertPreTrainedModel, BertForQuestionAnswering, XLNetModel
+from transformers.models.bert import BertPreTrainedModel, BertModel
 
 from . import transformer
 
@@ -15,11 +12,9 @@ class BertForBasicNER(BertPreTrainedModel):
     """BERT model for basic NER functionality.
     This module is composed of the BERT model with a linear layer on top of
     the output sequences.
-
     Params:
         `config`: a BertConfig class instance with the configuration to build a new model.
         `num_entity_labels`: the number of entity classes for the classifier.
-
     Inputs:
         `input_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
             with the word token indices in the vocabulary.
@@ -32,7 +27,6 @@ class BertForBasicNER(BertPreTrainedModel):
             a batch has varying length sentences.
         `label_ids`: a torch.LongTensor of shape [batch_size, sequence_length]
             with label indices selected in [0, ..., num_labels-1].
-
     Outputs:
         if `labels` is not `None`:
             Outputs the CrossEntropy classification loss of the output with the labels.
@@ -60,9 +54,7 @@ class BertForBasicNER(BertPreTrainedModel):
         if input_masks.dtype != torch.uint8:
             input_masks = input_masks == 1
 
-        batch_seq_enc, _ = self.bert(input_ids,
-                                     attention_mask=input_masks,
-                                     output_all_encoded_layers=False)
+        batch_seq_enc = self.bert(input_ids, attention_mask=input_masks)[0]
         # [batch_size, seq_len, hidden_size]
         batch_seq_enc = self.dropout(batch_seq_enc)
         # [batch_size, seq_len, num_entity_labels]
@@ -103,7 +95,7 @@ class NERModel(nn.Module):
         )
         # Multi-layer Transformer Layers to Incorporate Contextual Information
         self.token_encoder = transformer.make_transformer_encoder(
-            config.num_tf_layers, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
+            config.num_ner_tf_layers, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
         )
         if self.config.use_crf_layer:
             self.crf_layer = CRFLayer(config.hidden_size, self.config.num_entity_labels)
@@ -461,5 +453,3 @@ def judge_ner_prediction(pred_label_ids, gold_label_ids):
     ner_fn_set = gold_ner_set - pred_ner_set
 
     return ner_tp_set, ner_fp_set, ner_fn_set
-
-

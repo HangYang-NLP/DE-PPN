@@ -111,8 +111,6 @@ class SetPre4DEEModel(nn.Module):
         else:
             self.ner_model = ner_model
 
-        self.ner_model = NERModel(config)
-
         # all event tables
         self.event_tables = nn.ModuleList([
             EventTable(event_type, field_types, config.hidden_size)
@@ -140,12 +138,6 @@ class SetPre4DEEModel(nn.Module):
         if self.config.use_doc_enc:
             # get doc-level context information for every mention and sentence
             self.doc_context_encoder = transformer.make_transformer_encoder(
-                config.num_tf_layers, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
-            )
-
-        if self.config.use_path_mem:
-            # get field-specific and history-aware information for every span
-            self.field_context_encoder = transformer.make_transformer_encoder(
                 config.num_tf_layers, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
             )
 
@@ -301,7 +293,7 @@ class SetPre4DEEModel(nn.Module):
         event_type_list = doc_fea.event_type_labels
         for event_idx, event_type in enumerate(event_type_list):
             if event_type != 0:
-                set_pred_loss, outputs = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag = True)
+                set_pred_loss, _ = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag = True)
                 event_set_pred_loss += set_pred_loss
         return event_set_pred_loss, event_cls_loss
 
@@ -347,14 +339,40 @@ class SetPre4DEEModel(nn.Module):
 
         batch_span_context = torch.cat(span_context_list, dim=0)
         event_pred_list = self.get_event_cls_info(doc_sent_context, doc_fea, train_flag=False)
-        pred_event_list = []
+        num_entities = len(span_context_list)
+
+        event_idx2obj_idx2field_idx2token_tup = []
+        event_idx2event_decode_paths = []
         for event_idx, event_pred in enumerate(event_pred_list):
-            if event_pred != 0:
+            if event_pred == 0:
+                event_idx2obj_idx2field_idx2token_tup.append(None)
+                event_idx2event_decode_paths.append(None)
+            else:
                 outputs = self.Setpred4DEE(doc_sent_context, batch_span_context, doc_span_info, event_idx, train_flag=False)
                 pred_event = outputs["pred_doc_event_logps"].softmax(-1).argmax(-1)  # [num_sets,event_types]
                 pred_role = outputs["pred_role_logits"].softmax(-1).argmax(-1)  # [num_sets,num_roles,num_etities]
-                pred_event_list.append([event_idx, pred_event, pred_role])
-        return pred_event_list
+                obj_idx2field_idx2token_tup = self.pred2standard(pred_event, pred_role, doc_span_info, num_entities)
+                if len(obj_idx2field_idx2token_tup) < 1:
+                    event_idx2obj_idx2field_idx2token_tup.append(None)
+                    event_idx2event_decode_paths.append(None)
+                else:
+                    event_idx2obj_idx2field_idx2token_tup.append(obj_idx2field_idx2token_tup)
+                    event_idx2event_decode_paths.append(None)
+        return doc_fea.ex_idx, event_pred_list, event_idx2obj_idx2field_idx2token_tup, doc_span_info, event_idx2event_decode_paths
+
+    def pred2standard(self, pred_event_list, pred_role_list, doc_span_info, num_entities):
+        obj_idx2field_idx2token_tup = []
+        for pred_event, pred_role in zip(pred_event_list, pred_role_list):
+            if int(pred_event) == 0:
+                field_idx2token_tup = []
+                for pred_role_index in pred_role:
+                    if pred_role_index == num_entities:
+                        field_idx2token_tup.append(None)
+                    else:
+                        field_idx2token_tup.append(doc_span_info.span_token_tup_list[pred_role_index])
+                if field_idx2token_tup not in obj_idx2field_idx2token_tup:
+                    obj_idx2field_idx2token_tup.append(field_idx2token_tup)
+        return obj_idx2field_idx2token_tup
 
     def adjust_token_label(self, doc_token_labels_list):
         if self.config.use_token_role:  # do not use detailed token

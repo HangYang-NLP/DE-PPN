@@ -1,18 +1,19 @@
-# -*- coding: utf-8 -*-
-# AUTHOR: Hang Yang
-# DATE: 21-7-11
-
 import logging
 import os
 import re
 from collections import defaultdict, Counter
 import numpy as np
 import torch
+
 from .dee_metric import measure_event_table_filling
 from .event_type import event_type2event_class, BaseEvent, event_type_fields_list, common_fields
 from .ner_task import NERExample, NERFeatureConverter
 from .utils import default_load_json, default_dump_json, default_dump_pkl, default_load_pkl
+
+
 logger = logging.getLogger(__name__)
+
+
 class DEEExample(object):
     def __init__(self, annguid, detail_align_dict, only_inference=False):
         self.guid = annguid
@@ -137,6 +138,7 @@ class DEEExampleLoader(object):
         self.max_sent_len = max_sent_len
         self.train_on_multi_events = train_on_multi_events
         self.train_on_single_event = train_on_single_event
+
     def rearrange_sent_info(self, detail_align_info):
         if 'ann_valid_dranges' not in detail_align_info:
             detail_align_info['ann_valid_dranges'] = []
@@ -240,7 +242,7 @@ class DEEExampleLoader(object):
 
     def __call__(self, dataset_json_path):
         total_dee_examples = []
-        annguid_aligninfo_list = default_load_json(dataset_json_path)[:]
+        annguid_aligninfo_list = default_load_json(dataset_json_path)
         multi_events_id = 0
         if self.train_on_multi_events:
             multi_events_id = 1
@@ -258,7 +260,7 @@ class DEEExampleLoader(object):
             # dee_example = DEEExample(annguid, detail_align_info)
             recguid_eventname_eventdict_list = detail_align_info['recguid_eventname_eventdict_list']
             event_type_list = [event[1] for event in recguid_eventname_eventdict_list]
-            event_num = len((recguid_eventname_eventdict_list))
+            event_num = len(recguid_eventname_eventdict_list)
             if event_num < 5:
                 event_num_dict[str(event_num)] += 1
             else:
@@ -268,10 +270,12 @@ class DEEExampleLoader(object):
                 if len(recguid_eventname_eventdict_list) == 1:
                     dee_example = self.convert_dict_to_example(annguid, detail_align_info)
                     total_dee_examples.append(dee_example)
-            else:
+
+            if self.train_on_multi_events:
                 if len(recguid_eventname_eventdict_list) > multi_events_id:
                     dee_example = self.convert_dict_to_example(annguid, detail_align_info)
                     total_dee_examples.append(dee_example)
+
         return total_dee_examples
 
 
@@ -315,8 +319,6 @@ class DEEFeature(object):
         # event_type_idx -> key_sent_idx_set, used for key-event sentence detection
         self.event_idx2key_sent_idx_set, self.doc_sent_labels = self.build_key_event_sent_info()
 
-        # self.num_generated_triplets = 5
-
     def generate_dag_info_for(self, pred_span_token_tup_list, return_miss=False):
         '''
         :param pred_span_token_tup_list:  entity span token id (pred or gold)
@@ -342,6 +344,7 @@ class DEEFeature(object):
         for i, (event_arg_idxs_objs, event_type_idxs) in enumerate(zip(self.event_arg_idxs_objs_list, self.event_type_labels)):
             if event_arg_idxs_objs is None:
                 pred_event_arg_idxs_objs_lists.append(event_arg_idxs_objs)
+                # pred_event_type_idxs_lists.append(list((event_type_idxs,)))
                 pred_event_type_idxs_lists.append(event_type_idxs)
             else:
                 pred_event_arg_idxs_objs_list = []
@@ -642,6 +645,7 @@ class DEEFeatureConverter(object):
             self.truncate_doc_count, self.ner_fea_converter.truncate_count, self.truncate_span_count
         ))
         print(self.event_type2num)
+
         return dee_features
 
 
@@ -659,6 +663,93 @@ def prepare_doc_batch_dict(doc_fea_list):
         doc_batch_dict[key] = [getattr(doc_fea, key) for doc_fea in doc_fea_list]
 
     return doc_batch_dict
+
+
+def measure_dee_prediction(event_type_fields_pairs, features, event_decode_results, index2entity_label,
+                           dump_json_path=None):
+    pred_event_types = []
+    gold_event_types = []
+    pred_spans_token_tuple_list = []
+    gold_spans_token_tuple_list = []
+    pred_record_mat_list = []
+    gold_record_mat_list = []
+
+    for term in event_decode_results:
+        ex_idx, pred_event_type_labels, pred_record_mat, doc_span_info = term[:4]
+        doc_fea = features[ex_idx]
+
+        pred_event_types.append(pred_event_type_labels)
+        gold_event_types.append(doc_fea.event_type_labels)
+        pred_spans_token_tuple_list.append(doc_span_info.span_token_tup_list)
+        gold_spans_token_tuple_list.append(doc_fea.span_token_ids_list)
+        entity_type_list = []
+        for span_mention_range in doc_span_info.span_mention_range_list:
+            entity_type_list.append(doc_span_info.mention_type_list[span_mention_range[0]])
+        entity_type_span_dict = {
+            index2entity_label[entity_label][2:]: doc_span_info.span_token_tup_list[idx] for idx, entity_label in enumerate(entity_type_list) if entity_label != 0
+        }
+        pred_record_mat = [
+            [
+                [
+                    tuple(arg_tup) if arg_tup is not None else None
+                    for arg_tup in pred_record
+                ] for pred_record in pred_records
+            ] if pred_records is not None else None
+            for pred_records in pred_record_mat
+        ]
+
+        # pred_record_mat_new = []
+        # for event_idx, pred_records in enumerate(pred_record_mat):
+        #     if pred_records is not None:
+        #         pred_records_new = []
+        #         for pred_record in pred_records:
+        #             pred_record_new = []
+        #             for arg_idx, arg_tup in enumerate(pred_record):
+        #                 role_type = event_type_fields_pairs[event_idx][1][arg_idx]
+        #                 if event_idx == 0:
+        #                     find_argument = (len(pred_record) - arg_idx <= 1)
+        #                 else:
+        #                     find_argument = (len(pred_record) - arg_idx <= 2)
+        #                 if arg_tup is not None and not find_argument:
+        #                     arg_tup = arg_tup
+        #                 else:
+        #                     if role_type in entity_type_span_dict.keys() and find_argument:
+        #                         arg_tup = entity_type_span_dict[role_type]
+        #                     else:
+        #                         arg_tup = None
+        #                 pred_record_new.append(arg_tup)
+        #             pred_records_new.append(pred_record_new)
+        #         pred_record_mat_new.append(pred_records_new)
+        #     else:
+        #         pred_record_mat_new.append(None)
+
+        assert isinstance(doc_fea, DEEFeature)
+        gold_record_mat = [
+            [
+                [
+                    tuple(doc_fea.span_token_ids_list[arg_idx]) if arg_idx is not None else None
+                    for arg_idx in event_arg_idxs
+                ] for event_arg_idxs in event_arg_idxs_objs
+            ] if event_arg_idxs_objs is not None else None
+            for event_arg_idxs_objs in doc_fea.event_arg_idxs_objs_list
+        ]
+        # pred_record_mat = pred_record_mat_new
+        pred_record_mat_list.append(pred_record_mat)
+        gold_record_mat_list.append(gold_record_mat)
+
+    g_eval_res = measure_event_table_filling(
+        pred_record_mat_list, gold_record_mat_list,
+        event_type_fields_pairs,
+        pred_event_types, gold_event_types,
+        pred_spans_token_tuple_list, gold_spans_token_tuple_list,
+        dict_return=True
+    )
+
+    if dump_json_path is not None:
+        default_dump_json(g_eval_res, dump_json_path)
+
+    return g_eval_res
+
 
 def aggregate_task_eval_info(eval_dir_path, target_file_pre='dee_eval', target_file_suffix='.json',
                              dump_name='total_task_eval.pkl', dump_flag=False):
@@ -682,7 +773,6 @@ def aggregate_task_eval_info(eval_dir_path, target_file_pre='dee_eval', target_f
             epoch = int(epoch)
             fp = os.path.join(eval_dir_path, fn)
             eval_res = default_load_json(fp)
-
             epoch_res_list.append((epoch, eval_res))
 
     for data_span_type, model_str2epoch_res_list in data_span_type2model_str2epoch_res_list.items():
@@ -700,7 +790,7 @@ def aggregate_task_eval_info(eval_dir_path, target_file_pre='dee_eval', target_f
 def print_total_eval_info(data_span_type2model_str2epoch_res_list,
                           metric_type='micro',
                           span_type='pred_span',
-                          model_strs=('DCFEE-O', 'DCFEE-M', 'GreedyDec', 'Doc2EDAG'),
+                          model_strs=('DCFEE-O', 'DCFEE-M', 'GreedyDec', 'Doc2EDAG', 'SetPre4DEE'),
                           target_set='test'):
     """Print the final performance by selecting the best epoch on dev set and emitting performance on test set"""
     dev_type = 'dev'
@@ -721,7 +811,6 @@ def print_total_eval_info(data_span_type2model_str2epoch_res_list,
 
     dev_model_str2epoch_res_list = data_span_type2model_str2epoch_res_list[(dev_type, span_type)]
     test_model_str2epoch_res_list = data_span_type2model_str2epoch_res_list[(test_type, span_type)]
-
     has_header = False
     mstr_bepoch_list = []
     print('=' * 15, 'Final Performance (%) (avg_type={})'.format(metric_type), '=' * 15)
@@ -805,7 +894,7 @@ def resume_eval_results(base_dir, data_type, span_type, model_str, epoch):
     return eval_results
 
 
-def print_single_vs_multi_performance(mstr_bepoch_list, base_dir, features,
+def print_single_vs_multi_performance(mstr_bepoch_list, base_dir, features, index2entity_label,
                                       metric_type='micro', data_type='test', span_type='pred_span'):
     model_str2decode_results = {}
     for model_str, best_epoch in mstr_bepoch_list:
@@ -832,13 +921,13 @@ def print_single_vs_multi_performance(mstr_bepoch_list, base_dir, features,
         single_decode_results = [dec_res for dec_res in total_decode_results if dec_res[0] in single_eid_set]
         assert len(single_decode_results) == len(single_eid_set)
         single_eval_res = measure_dee_prediction(
-            event_type_fields_pairs, features, single_decode_results
+            event_type_fields_pairs, features, single_decode_results, index2entity_label
         )
 
         multi_decode_results = [dec_res for dec_res in total_decode_results if dec_res[0] in multi_eid_set]
         assert len(multi_decode_results) == len(multi_eid_set)
         multi_eval_res = measure_dee_prediction(
-            event_type_fields_pairs, features, multi_decode_results
+            event_type_fields_pairs, features, multi_decode_results, index2entity_label
         )
 
         etype_sf1_mf1_list = []
@@ -960,4 +1049,3 @@ def print_ablation_study(mstr_bepoch_list, base_dir, base_mstr, other_mstrs,
                 eval_str += align_temp.format(dec_temp.format(avg_f1_abs*100))
 
             print(eval_str)
-

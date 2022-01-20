@@ -1,11 +1,13 @@
 import torch.nn as nn
 import torch
-from transformers.modeling_bert import BertIntermediate, BertOutput, BertAttention, BertLayerNorm, BertSelfAttention, BertConfig, BertEncoder
+from transformers.models.bert.modeling_bert import BertIntermediate, BertOutput, BertAttention, BertSelfAttention, BertConfig, BertEncoder
 from models.set_criterion import SetCriterion
 from DEE import transformer
 
-class SetPred4DEE(nn.Module):
+BertLayerNorm = torch.nn.LayerNorm
 
+
+class SetPred4DEE(nn.Module):
     def __init__(self, config, event_type2role_index_list, return_intermediate = True):
         super(SetPred4DEE, self).__init__()
         self.config = config
@@ -30,7 +32,6 @@ class SetPred4DEE(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         if num_set_layers > 0:
-            # self.set_layers = BertEncoder()
             self.set_layers = nn.ModuleList([DecoderLayer(config) for _ in range(num_set_layers)])
         else:
             self.set_layers = False
@@ -46,7 +47,7 @@ class SetPred4DEE(nn.Module):
         self.metric_4 = nn.Linear(config.hidden_size, 1, bias=False)
         self.event_type_weight = config.event_type_weight
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cuda')
-        self.criterion = SetCriterion(event_type_classes, self.event_type_weight, self.cost_weight)
+        self.criterion = SetCriterion(config, event_type_classes, self.event_type_weight, self.cost_weight)
         self.cross_entropy = nn.CrossEntropyLoss(reduction="sum")
 
         if self.config.use_sent_span_encoder:
@@ -54,7 +55,7 @@ class SetPred4DEE(nn.Module):
 
         if self.config.use_role_decoder:
             self.event2role_decoder = transformer.make_transformer_decoder(
-                config.num_tf_layers, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
+                config.num_event2role_decoder_layer, config.hidden_size, ff_size=config.ff_size, dropout=config.dropout
             )
 
     def forward(self, doc_sent_context, batch_span_context, doc_span_info, event_type_pred = None, train_flag = True):
@@ -116,9 +117,9 @@ class SetPred4DEE(nn.Module):
                 if self.return_intermediate:
                     all_hidden_states = all_hidden_states + (event_role_embed,)
                 layer_outputs = layer_module(
-                # event_role_embed, doc_sent_context
-                event_role_embed, batch_span_context
-                # event_role_embed, doc_span_sent_context
+                    # event_role_embed, doc_sent_context
+                    event_role_embed, batch_span_context
+                    # event_role_embed, doc_span_sent_context
                 )
                 event_role_hidden_states = layer_outputs[0]
         else:
@@ -143,6 +144,7 @@ class SetPred4DEE(nn.Module):
             return loss, outputs
         else:
             return outputs
+
 
 class DecoderLayer(nn.Module):
     def __init__(self, config):
@@ -175,4 +177,3 @@ class DecoderLayer(nn.Module):
         layer_output = self.output(intermediate_output, attention_output)
         outputs = (layer_output,) + outputs
         return outputs
-

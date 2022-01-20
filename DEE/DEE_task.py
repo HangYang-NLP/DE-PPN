@@ -14,6 +14,7 @@ from .utils import BERTChineseCharacterTokenizer, default_dump_json, default_loa
 from .ner_model_transformer import BertForBasicNER
 from .base_task import TaskSetting, BasePytorchTask
 from .event_type import event_type_fields_list
+from .dee_helper import measure_dee_prediction
 from .dee_model import SetPre4DEEModel
 
 
@@ -26,30 +27,30 @@ class DEETaskSetting(TaskSetting):
         ('summary_dir_name', '/tmp/Summary'),
         ('max_sent_len', 128),
         ('max_sent_num', 64),
-        ('train_batch_size', 16),
-        ('gradient_accumulation_steps', 16),
+        ('train_batch_size', 32),
+        ('gradient_accumulation_steps', 8),
         ('eval_batch_size', 8),
-        ('learning_rate', 1e-5),
-        ('num_train_epochs', 50),
+        ('learning_rate', 1e-4),
+        ('num_train_epochs', 100),
         ('no_cuda', False),
         ('local_rank', -1),
         ('seed', 99),
         ('optimize_on_cpu', False),
         ('fp16', False),
-        ('use_bert', True),  # whether to use bert as the encoder
-        # ('bert_model', 'bert-base-chinese'),  # use which pretrained bert model
+        ('use_bert', False),  # whether to use bert as the encoder
+        ('bert_model', 'bert-base-chinese'),  # use which pretrained bert model
         ('only_master_logging', True),  # whether to print logs from multiple processes
         ('cpt_file_name', 'SetPre4DEE'),  # decide the identity of checkpoints, evaluation results, etc.
         ('model_type', 'SetPre4DEE'),  # decide the model class used
         ('rearrange_sent', False),  # whether to rearrange sentences
-        ('use_crf_layer', False),  # whether to use CRF Layer
+        ('use_crf_layer', True),  # whether to use CRF Layer
         ('min_teacher_prob', 0.1),  # the minimum prob to use gold spans
         ('schedule_epoch_start', 10),  # from which epoch the scheduled sampling starts
         ('schedule_epoch_length', 10),  # the number of epochs to linearly transit to the min_teacher_prob
         ('loss_lambda_1', 0.1),  # the proportion of ner loss
-        ('loss_lambda_2', 0.4),  # the proportion of ner loss
-        ('loss_lambda_3', 0.5),  # the proportion of ner loss
-
+        ('loss_lambda_2', 0.4),  # the proportion of event type classification loss
+        ('loss_lambda_3', 0.5),  # the proportion of event generation loss
+        ('decoder_lr', 2e-5),  # learning rate of decoder
         ('loss_gamma', 1.0),  # the scaling proportion of missed span sentence ner loss
         ('add_greedy_dec', False),  # whether to add additional greedy decoding
         ('use_token_role', True),  # whether to use detailed token role
@@ -61,6 +62,7 @@ class DEETaskSetting(TaskSetting):
         ('hidden_dropout', 0.1),
         ('ff_size', 1024),  # feed-forward mid layer size
         ('num_tf_layers', 4),  # transformer num_tf_layersr layer number
+        ('num_ner_tf_layers', 8),  # transformer num_ner_tf_layersr layer number
         # ablation study parameters,
         ('use_path_mem', True),  # whether to use the memory module when expanding paths
         ('use_scheduled_sampling', True),  # whether to use the scheduled sampling
@@ -68,6 +70,8 @@ class DEETaskSetting(TaskSetting):
         # ('use_doc_gcn_enc', False),  # whether to use document-level GCN
         ('neg_field_loss_scaling', 3.0),  # prefer FNs over FPs
         ('layer_norm_eps', 1e-12),  # prefer FNs over FPs
+        ('num_event2role_decoder_layer', 4),
+        ('train_nopair_sets', False)  # Whether train on No-matching sets
     ]
 
     def __init__(self, **kwargs):
@@ -94,6 +98,7 @@ class DEETask(BasePytorchTask):
 
         # build example loader
         self.example_loader_func = DEEExampleLoader(self.setting.rearrange_sent, self.setting.max_sent_len, self.setting.train_on_multi_events, self.setting.train_on_single_event)
+        # self.example_loader_func = DEEExampleLoader(self.setting.rearrange_sent, self.setting.max_sent_len)
 
         # build feature converter
         self.feature_converter_func = DEEFeatureConverter(
@@ -117,6 +122,10 @@ class DEETask(BasePytorchTask):
         else:
             self.setting.num_entity_labels = len(self.entity_label_list)
 
+        self.index2entity_label = {  # for entity label to label index mapping
+            idx:entity_label  for idx, entity_label in enumerate(self.entity_label_list)
+        }
+
         if self.setting.use_bert:
             ner_model = BertForBasicNER.from_pretrained(
                 self.setting.bert_model, num_entity_labels = self.setting.num_entity_labels, use_crf_layer = self.setting.use_crf_layer
@@ -134,17 +143,17 @@ class DEETask(BasePytorchTask):
             ner_model.bert.pooler = PseudoPooler()
         else:
             ner_model = BertForBasicNER.from_pretrained(
-                self.setting.bert_model, num_entity_labels = self.setting.num_entity_labels, use_crf_layer = self.setting.use_crf_layer
+                self.setting.bert_model, num_entity_labels = self.setting.num_entity_labels
             )
             self.setting.update_by_dict(ner_model.config.__dict__)  #
             ner_model = None
 
-        if self.setting.model_type == 'SetPre4DEE':
-            self.model = SetPre4DEEModel(
-                self.setting, self.event_type_fields_pairs, ner_model=ner_model,
-            )
-        else:
-            raise Exception('Unsupported model type {}'.format(self.setting.model_type))
+        # if self.setting.model_type == 'SetPre4DEE':
+        self.model = SetPre4DEEModel(
+            self.setting, self.event_type_fields_pairs, ner_model=ner_model,
+        )
+        # else:
+        #     raise Exception('Unsupported model type {}'.format(self.setting.model_type))
 
         self._decorate_model(parallel_decorate=parallel_decorate)
 
@@ -152,7 +161,6 @@ class DEETask(BasePytorchTask):
         # self.optimizer = optim.Adam(self.model.parameters(), lr=self.setting.learning_rate)
         if load_train:
             self._init_bert_optimizer()
-
         # # resume option
         # if resume_model or resume_optimizer:
         #     self.resume_checkpoint(resume_model=resume_model, resume_optimizer=resume_optimizer)
@@ -164,6 +172,7 @@ class DEETask(BasePytorchTask):
         self.reset_teacher_prob()
         self.best_f1_single = 0
         self.best_f1_multi = 0
+        self.best_micro_f1 = 0
         self.logging('Successfully initialize {}'.format(self.__class__.__name__))
 
     def reset_teacher_prob(self):
@@ -273,7 +282,7 @@ class DEETask(BasePytorchTask):
                 resume_base_epoch = 0
 
         self.resume_cpt_at(self.setting.start_epoch, resume_model=True, resume_optimizer=True)
-        resume_base_epoch = 0
+        # resume_base_epoch = 0
 
         # resume cpt if possible
         if resume_base_epoch > 0:
@@ -298,14 +307,10 @@ class DEETask(BasePytorchTask):
         if self.is_master_node():
             print('\nPROGRESS: {:.2f}%\n'.format(epoch / self.setting.num_train_epochs * 100))
         self.logging('Current teacher prob {}'.format(self.get_teacher_prob(batch_inc_flag=False)))
+
         if resume_cpt_flag:
             self.resume_cpt_at(epoch)
             self.logging('resume_cpt_at {}.{}'.format(self.setting.cpt_file_name, epoch))
-            self.setting = dee_setting
-            # self.logging('Setting: {}'.format(self.setting, ensure_ascii=False, indent=2))
-        # if self.is_master_node() and save_cpt_flag:
-        #     start_epoch = self.setting.start_epoch
-        #     self.save_cpt_at(start_epoch)
 
         data_type = 'test'
         gold_span_flag = False
@@ -332,36 +337,37 @@ class DEETask(BasePytorchTask):
             model_str = heuristic_type
 
         start_epoch = self.setting.start_epoch
-        decode_dump_name = decode_dump_template.format(data_type, span_str, model_str, start_epoch)
-        eval_dump_name = eval_dump_template.format(data_type, span_str, model_str, start_epoch)
+
+        decode_dump_name = decode_dump_template.format(data_type, span_str, model_str, epoch)
+        eval_dump_name = eval_dump_template.format(data_type, span_str, model_str, epoch)
         total_event_decode_results, total_eval_res = self.eval(features, dataset, use_gold_span=gold_span_flag, heuristic_type=heuristic_type,
-                  dump_decode_pkl_name=decode_dump_name, dump_eval_json_name=eval_dump_name, eval_process = resume_cpt_flag)
+                  dump_decode_pkl_name=decode_dump_name, dump_eval_json_name=eval_dump_name, eval_process = save_cpt_flag)
         test_result_dict = total_eval_res
-        self.logging('Test F1-score-\t all {}'.format(test_result_dict))
+        self.logging('{} F1-score-\t all {}'.format(data_type, test_result_dict[-1]))
 
-        decode_dump_name = decode_dump_template.format(data_type == 'dev', span_str, model_str, start_epoch)
-        eval_dump_name = eval_dump_template.format(data_type == 'dev', span_str, model_str, start_epoch)
+        decode_dump_name = decode_dump_template.format('dev', span_str, model_str, epoch)
+        eval_dump_name = eval_dump_template.format('dev', span_str, model_str, epoch)
         total_event_decode_results, total_eval_res = self.eval(self.dev_features, self.dev_dataset, use_gold_span=gold_span_flag, heuristic_type=heuristic_type,
-                  dump_decode_pkl_name=decode_dump_name, dump_eval_json_name=eval_dump_name, eval_process = resume_cpt_flag)
+                  dump_decode_pkl_name=decode_dump_name, dump_eval_json_name=eval_dump_name, eval_process = save_cpt_flag)
         dev_result_dict = total_eval_res
-        self.logging('Dev F1-score-\t all {}'.format(dev_result_dict))
-        single_f1, multi_f1, average = test_result_dict['all_type_result'].values()
+        self.logging('Dev F1-score-\t all {}'.format(dev_result_dict[-1]))
 
-        start_epoch = self.setting.start_epoch
-        if self.is_master_node() and save_cpt_flag and multi_f1 > self.best_f1_multi:
-            self.save_cpt_at(start_epoch)
-            self.best_f1_multi = multi_f1
+        # single_f1, multi_f1, average = test_result_dict['all_type_result'].values()
+        micro_f1 = dev_result_dict[-1]['MicroF1']
+
+        if self.is_master_node() and save_cpt_flag and micro_f1 > self.best_micro_f1:
+            self.logging('save path\t {}'.format('{}.cpt.{}'.format(self.setting.cpt_file_name, epoch)))
+            self.save_cpt_at(epoch)
+            self.best_micro_f1 = micro_f1
 
         if not resume_cpt_flag:
-            self.logging('save path\t {}'.format(start_epoch))
             eval_result_file_path = '{}_result.json'.format(start_epoch)
             eval_result_file_path = os.path.join(self.setting.output_dir, eval_result_file_path)
             result_dict = {
                 'epoch': epoch,
-                'total_eval': test_result_dict
+                'total_eval': test_result_dict[-1]
             }
             default_dump_result_json(result_dict, eval_result_file_path)
-
 
     def save_cpt_at(self, epoch):
         self.save_checkpoint(cpt_file_name='{}.cpt.{}'.format(self.setting.cpt_file_name, epoch), epoch=epoch)
@@ -400,7 +406,7 @@ class DEETask(BasePytorchTask):
         else:
             dump_decode_pkl_path = None
 
-        if os.path.exists(dump_decode_pkl_path) and eval_process:
+        if os.path.exists(dump_decode_pkl_path):
             total_event_decode_results = default_load_pkl(dump_decode_pkl_path)
         else:
             total_event_decode_results = self.base_eval(
@@ -416,8 +422,12 @@ class DEETask(BasePytorchTask):
         else:
             dump_eval_json_path = None
 
+        total_eval_res = measure_dee_prediction(
+            self.event_type_fields_pairs, features, total_event_decode_results, self.index2entity_label,
+            dump_json_path=dump_eval_json_path
+        )
 
-
+        return total_event_decode_results, total_eval_res
 
     def reevaluate_dee_prediction(self, target_file_pre='dee_eval', target_file_suffix='.pkl',
                                   dump_flag=False):
@@ -450,8 +460,6 @@ class DEETask(BasePytorchTask):
                 fp = os.path.join(eval_dir_path, fn)
                 self.logging('Re-evaluating {}'.format(fp))
                 event_decode_results = default_load_pkl(fp)
-
-
 
         for data_span_type, model_str2epoch_res_list in data_span_type2model_str2epoch_res_list.items():
             for model_str, epoch_res_list in model_str2epoch_res_list.items():

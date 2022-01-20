@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-# AUTHOR: Hang Yang
-# DATE: 19-9-19
-
 import torch
 import logging
 import os
@@ -11,7 +7,7 @@ from collections import defaultdict
 
 from .utils import default_load_json, default_dump_json, EPS, BERTChineseCharacterTokenizer
 from .event_type import common_fields, event_type_fields_list
-from .ner_model_transformer import BertForBasicNER, judge_ner_prediction, NERModel
+from .ner_model_transformer import BertForBasicNER, judge_ner_prediction
 from .base_task import TaskSetting, BasePytorchTask
 
 
@@ -65,12 +61,13 @@ class NERExample(object):
             if field not in visit_set:
                 visit_set.add(field)
                 entity_label_list.extend(['B-' + field, 'I-' + field])
+
         for event_name, fields in event_type_fields_list:
-            # if event_name == "EquityPledge":
-                for field in fields:
-                    if field not in visit_set:
-                        visit_set.add(field)
-                        entity_label_list.extend(['B-' + field, 'I-' + field])
+            for field in fields:
+                if field not in visit_set:
+                    visit_set.add(field)
+                    entity_label_list.extend(['B-' + field, 'I-' + field])
+
         return entity_label_list
 
     def __repr__(self):
@@ -79,10 +76,52 @@ class NERExample(object):
         )
         return ex_str
 
-def load_ner_dataset(dataset_json_path):
+
+def load_ner_dataset_1(dataset_json_path):
     total_ner_examples = []
     annguid2detail_align_info = default_load_json(dataset_json_path)
     for annguid, detail_align_info in annguid2detail_align_info:
+        sents = detail_align_info['sentences']
+        ann_valid_mspans = detail_align_info['ann_valid_mspans']
+        ann_valid_dranges = detail_align_info['ann_valid_dranges']
+        ann_mspan2guess_field = detail_align_info['ann_mspan2guess_field']
+        # assert len(ann_valid_dranges) == len(ann_valid_mspans)
+        recguid_eventname_eventdict_list = detail_align_info['recguid_eventname_eventdict_list']
+        event_type = recguid_eventname_eventdict_list[0][1]
+        sent_idx2mrange_mspan_mfield_tuples = {}
+        for drange, mspan in zip(ann_valid_dranges, ann_valid_mspans):
+            sent_idx, char_s, char_e = drange
+            sent_mrange = (char_s, char_e)
+
+            sent_text = sents[sent_idx]
+            # print(sent_text[char_s: char_e], mspan)
+            # assert sent_text[char_s: char_e] == mspan
+
+            guess_field = ann_mspan2guess_field[mspan]
+
+            if sent_idx not in sent_idx2mrange_mspan_mfield_tuples:
+                sent_idx2mrange_mspan_mfield_tuples[sent_idx] = []
+            sent_idx2mrange_mspan_mfield_tuples[sent_idx].append((sent_mrange, mspan, guess_field))
+
+        for sent_idx in range(len(sents)):
+            sent_text = sents[sent_idx]
+            if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
+                mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
+            else:
+                mrange_mspan_mfield_tuples = []
+            if event_type == 'EquityFreeze':
+                total_ner_examples.append(
+                    NERExample('{}-{}'.format(annguid, sent_idx),
+                               sent_text,
+                               mrange_mspan_mfield_tuples)
+                )
+    return total_ner_examples
+
+
+def load_ner_dataset(dataset_json_path):
+    total_ner_examples = []
+    annguid2detail_align_info = default_load_json(dataset_json_path)
+    for annguid, detail_align_info in annguid2detail_align_info.items():
         sents = detail_align_info['sentences']
         ann_valid_mspans = detail_align_info['ann_valid_mspans']
         ann_valid_dranges = detail_align_info['ann_valid_dranges']
@@ -107,17 +146,20 @@ def load_ner_dataset(dataset_json_path):
                     sent_idx2mrange_mspan_mfield_tuples[sent_idx] = []
                 sent_idx2mrange_mspan_mfield_tuples[sent_idx].append((sent_mrange, mspan, guess_field))
 
-        for sent_idx in range(len(sents)):
-            sent_text = sents[sent_idx]
-            if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
-                mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
-            else:
-                mrange_mspan_mfield_tuples = []
-            total_ner_examples.append(
-                NERExample('{}-{}'.format(annguid, sent_idx),
-                           sent_text,
-                           mrange_mspan_mfield_tuples)
-            )
+        if event_type == 'EquityPledge':
+            for sent_idx in range(len(sents)):
+                sent_text = sents[sent_idx]
+                if sent_idx in sent_idx2mrange_mspan_mfield_tuples:
+                    mrange_mspan_mfield_tuples = sent_idx2mrange_mspan_mfield_tuples[sent_idx]
+                else:
+                    mrange_mspan_mfield_tuples = []
+
+                total_ner_examples.append(
+                    NERExample('{}-{}'.format(annguid, sent_idx),
+                            sent_text,
+                            mrange_mspan_mfield_tuples)
+                )
+
     return total_ner_examples
 
 
@@ -162,6 +204,7 @@ class NERFeatureConverter(object):
         self.entity_label2index = {  # for entity label to label index mapping
             entity_label: idx for idx, entity_label in enumerate(self.entity_label_list)
         }
+
         self.include_cls = include_cls
         self.include_sep = include_sep
 
@@ -349,20 +392,17 @@ class NERTask(BasePytorchTask):
         self.index2entity_lable = {
             value:key for key , value in self.entity_label2index.items()
         }
+
         # load data
-        if load_train:
-            self._load_data(
-                load_ner_dataset, self.feature_converter_func, convert_ner_features_to_dataset,
-                load_train=load_train, load_dev=load_dev, load_test=load_test
-            )
+        self._load_data(
+            load_ner_dataset, self.feature_converter_func, convert_ner_features_to_dataset,
+            load_train=load_train, load_dev=load_dev, load_test=load_test
+        )
 
         # build model
         self.setting.num_entity_labels = len(self.entity_label_list)
         if build_model:
-            print("entity_label", len(self.entity_label_list))
-            self.model = BertForBasicNER.from_pretrained(self.setting.bert_model, num_entity_labels = len(self.entity_label_list))
-            # self.model = BertForBasicNER.from_pretrained(self.setting.bert_model)
-            # self.model = NERModel(self.setting)
+            self.model = BertForBasicNER.from_pretrained(self.setting.bert_model, len(self.entity_label_list))
             self.setting.update_by_dict(self.model.config.__dict__)  # BertConfig dictionary
             self._decorate_model(parallel_decorate=parallel_decorate)
 
@@ -431,86 +471,9 @@ class NERTask(BasePytorchTask):
         assert len(fea_input_ids) == len(fea_label_ids) == len(fea_masks) == len(fea_segment_ids) == max_seq_len
         return NERFeature(fea_input_ids, fea_masks, fea_segment_ids, fea_label_ids, seq_len=fea_seq_len)
 
-    def train(self,  save_cpt_flag=True):
+    def train(self):
         self.logging('='*20 + 'Start Training' + '='*20)
         self.base_train(get_ner_loss_on_batch, self.eval_function)
-
-        ### test
-    def test(self, event_type, see_data):
-        self.logging('='*20 + 'Start Testing' + '='*20)
-        data_dir = "./Data/"
-        file_name = "{}.json".format(see_data)
-        dataset_json_path = data_dir + file_name
-        with open(dataset_json_path, 'r', encoding='utf-8') as fin:
-            tmp_json = json.load(fin)
-        for annguid, detail_align_info in tmp_json:
-            print(annguid)
-            recguid_eventname_eventdict_list = detail_align_info['recguid_eventname_eventdict_list']
-            doc_event_type = recguid_eventname_eventdict_list[0][1]
-            if doc_event_type == event_type:
-                sents = detail_align_info['sentences']
-                entity_list_result = []
-                for sent in sents:
-                    text_feature = self.convert_single_example_to_feature(text=sent)
-                    batch = convert_ner_features_to_dataset([text_feature], Test=True)
-                    # value = [[(pred_label, gold_label, token_mask), ...], ...]
-                    batch_info = self.base_test(batch, get_ner_pred_on_batch)
-                    sen_length = len(sent)
-                    entity_result = batch_info.cpu().data.numpy().tolist()
-                    tags = [self.index2entity_lable[idx[0]] for idx in entity_result[0]]
-                    json_result = result_to_json(sent, tags, id = annguid)
-                    # print(json_result, "\n")
-                    entity_list_result.append(json_result)
-                assert len(sents) == len(entity_list_result)
-                detail_align_info['entities'] = entity_list_result
-                info = [annguid, detail_align_info]
-                write_test_result(info,event_type, see_data)
-
-
-    # def get_local_context_info(self, doc_batch_dict, train_flag=False, use_gold_span=False):
-    #     label_key = 'doc_token_labels'
-    #     if train_flag or use_gold_span:
-    #         assert label_key in doc_batch_dict
-    #         need_label_flag = True
-    #     else:
-    #         need_label_flag = False
-    #
-    #     if need_label_flag:
-    #         doc_token_labels_list = self.adjust_token_label(doc_batch_dict[label_key])
-    #     else:
-    #         doc_token_labels_list = None
-    #
-    #     batch_size = len(doc_batch_dict['ex_idx'])
-    #     doc_token_ids_list = doc_batch_dict['doc_token_ids']
-    #     doc_token_masks_list = doc_batch_dict['doc_token_masks']
-    #     valid_sent_num_list = doc_batch_dict['valid_sent_num']
-    #
-    #     # transform doc_batch into sent_batch
-    #     ner_batch_idx_start_list = [0]
-    #     ner_token_ids = []
-    #     ner_token_masks = []
-    #     ner_token_labels = [] if need_label_flag else None
-    #     for batch_idx, valid_sent_num in enumerate(valid_sent_num_list):
-    #         idx_start = ner_batch_idx_start_list[-1]
-    #         idx_end = idx_start + valid_sent_num
-    #         ner_batch_idx_start_list.append(idx_end)
-    #
-    #         ner_token_ids.append(doc_token_ids_list[batch_idx])
-    #         ner_token_masks.append(doc_token_masks_list[batch_idx])
-    #         if need_label_flag:
-    #             ner_token_labels.append(doc_token_labels_list[batch_idx])
-    #
-    #     # [ner_batch_size, norm_sent_len]
-    #     ner_token_ids = torch.cat(ner_token_ids, dim=0)
-    #     ner_token_masks = torch.cat(ner_token_masks, dim=0)
-    #     if need_label_flag:
-    #         ner_token_labels = torch.cat(ner_token_labels, dim=0)
-    #
-    #     # get ner output
-    #     ner_token_emb, ner_loss, ner_token_preds = self.model(
-    #         ner_token_ids, ner_token_masks, label_ids=ner_token_labels,
-    #         train_flag=train_flag, decode_flag=not use_gold_span,
-    #     )
 
     def eval_function(self, eval_dataset,  eval_save_prefix='', pgm_return_flag=False):
         self.logging('eval size {}'.format(len(eval_dataset)))
@@ -662,7 +625,7 @@ class NERTask(BasePytorchTask):
     def get_total_prediction(self, eval_dataset, load_model):
         self.logging('='*20 + 'Get Total Prediction' + '='*20)
         total_pred_gold_mask = self.base_eval(
-            eval_dataset, get_ner_pred_on_batch,load_model, reduce_info_type='none'
+            eval_dataset, get_ner_pred_on_batch, load_model, reduce_info_type='none'
         )
         # torch.Tensor(dtype=torch.long, device='cpu')
         # size = [batch_size, seq_len, 3]
@@ -697,9 +660,8 @@ def prepare_ner_batch(batch, resize_len=True):
 
 def get_ner_loss_on_batch(ner_task, batch):
     input_ids, input_masks, segment_ids, label_ids = prepare_ner_batch(batch, resize_len=True)
-    model = ner_task.model
-    # print(model)
-    _, loss, _ = model(input_ids, input_masks, label_ids)
+    _, loss, _ = ner_task.model(input_ids, input_masks, label_ids)
+
     return loss
 
 
@@ -718,7 +680,7 @@ def get_ner_pred_on_batch(ner_task, batch):
     # important to set resize_len to False to maintain the same seq len between batches
     input_ids, input_masks, segment_ids, label_ids = prepare_ner_batch(batch, resize_len=False)
     batch_seq_pred_gold_mask = ner_task.model(input_ids, input_masks,
-                                              # token_type_ids=segment_ids,
+                                            #   token_type_ids=segment_ids,
                                               label_ids=label_ids,
                                               eval_flag=True,
                                               eval_for_metric=False)
@@ -726,6 +688,7 @@ def get_ner_pred_on_batch(ner_task, batch):
     # value = [[(pred_label, gold_label, token_mask), ...], ...]
     torch.cuda.empty_cache()
     return batch_seq_pred_gold_mask
+
 
 def result_to_json(string, tags, id):
     tags = tags[1:len(string)+1]
@@ -772,6 +735,3 @@ def write_test_result(data,event_type, see_data):
     with open(file_path, 'a', encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
         f.write("\n")
-
-
-
