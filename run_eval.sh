@@ -5,7 +5,7 @@ CUDA="0"
 NUM_GPUS=1
 {
     CUDA_VISIBLE_DEVICES=${CUDA} bash train_multi.sh ${NUM_GPUS} \
-        --task_name='SetPre4DEE_tf8' \
+        --task_name='SetPre4DEE' \
         --use_bert=False \
         --skip_train=True \
         --train_nopair_sets=True  \
