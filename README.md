@@ -9,6 +9,23 @@ Table of Contents
 
 ## Overview
 Code for the paper ["Document-level Event Extraction via Parallel Prediction Networks"](https://aclanthology.org/2021.acl-long.492/).
+An updated complete code, in which part of the code (i.e. Data preprocessing, sentence-level extraction and evaluation metrics following Doc2EDAG[https://github.com/dolphin-zs/Doc2EDAG]).
+A trained model can be downloaded via the link(https://pan.baidu.com/s/1iEfYEOUIzhOb4eH2OdM5ig\ password:u0h8) for reference.
+
+Change `CUDA_VISIBLE_DEVICES` in `run.sh` and run:
+```bash
+# single GPU
+$ bash run_single.sh
+
+# multiple GPUs
+## change `NUM_GPUS` and `CUDA` in `run_multi.sh`
+$ bash run_multi.sh
+
+# for evaluation
+$ bash run_eval.sh
+```
+By setting a large step length of gradient accumulation, we can achieve large batch training with a few common GPUs. Specifically, for Titan X (12GB Memory), you should maintain B/(N*G) == 1,
+where B, N and G denote the batch size, the number of GPUs, and the step size of gradient accumulation, respectively.
 
 <p align="center">
   <img src="./overview.png" alt="Photo" style="width="100%;"/>
@@ -22,7 +39,7 @@ Code for the paper ["Document-level Event Extraction via Parallel Prediction Net
 - tqdm
 
 ## Datasets
-- ChFinAnn (Access from [https://github.com/dolphin-zs/Doc2EDAG/blob/master/Data.zip]. Data preprocessing, sentence-level extraction and evaluation metrics following Doc2EDAG[https://github.com/dolphin-zs/Doc2EDAG]).
+- ChFinAnn (Access from [https://github.com/dolphin-zs/Doc2EDAG/blob/master/Data.zip].
 
 ## Reference
 ```
