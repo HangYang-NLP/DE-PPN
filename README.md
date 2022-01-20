@@ -32,11 +32,12 @@ where B, N and G denote the batch size, the number of GPUs, and the step size of
 </p>
 
 ## Dependencies 
-- pytorch=1.6 
-- transformers=3.1.0
-- tensorboardX
+- pytorch=1.10.1
+- transformers=4.14.1
+- tensorboardX=2.2
 - numpy
 - tqdm
+- pytorch-pretrained-bert 0.4.0
 
 ## Datasets
 - ChFinAnn (Access from [https://github.com/dolphin-zs/Doc2EDAG/blob/master/Data.zip].
