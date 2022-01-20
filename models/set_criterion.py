@@ -1,7 +1,9 @@
+import torch
 import torch.nn as nn
-import torch, math
-from models.matcher import HungarianMatcher
 import torch.nn.functional as F
+
+from models.matcher import HungarianMatcher
+
 
 class SetCriterion(nn.Module):
     """ This class computes the loss for Set_RE.
@@ -9,7 +11,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class, subject position and object position)
     """
-    def __init__(self, num_classes, event_type_weight = False, cost_weight = False, na_coef = 0.1, losses = ["event", "role"], matcher = 'avg'):
+    def __init__(self, config, num_classes, event_type_weight = False, cost_weight = False, na_coef = 0.1, losses = ["event", "role"], matcher = 'avg'):
         """ Create the criterion.
         Parameters:
             num_classes: number of relation categories
@@ -30,6 +32,7 @@ class SetCriterion(nn.Module):
             self.type_weight[-1] = na_coef
         self.register_buffer('rel_weight', self.type_weight)
         self.cross_entropy = nn.CrossEntropyLoss(reduction="sum")
+        self.config = config
 
     def forward(self, outputs, targets):
         """ This performs the loss computation.
@@ -43,10 +46,7 @@ class SetCriterion(nn.Module):
         losses = self.get_role_loss(outputs, targets, indices_tensor)
         return losses
 
-
-
     def get_role_loss(self, outputs, targets, indices_tensor):
-
         num_sets, num_roles, num_entities = outputs["pred_role_logits"].size()
 
         pred_event = outputs["pred_doc_event_logps"].softmax(-1)
@@ -64,16 +64,32 @@ class SetCriterion(nn.Module):
         selected_pred_role_tensor = pred_role[indices_tensor[0]]
         selected_gold_role_tensor = gold_role_tensor[indices_tensor[1]]
         # role_loss = self.cross_entropy(selected_pred_role_tensor.flatten(0, 1), selected_gold_role_tensor.flatten(0, 1))
-        role_loss = F.cross_entropy(selected_pred_role_tensor.flatten(0, 1), selected_gold_role_tensor.flatten(0, 1))
+
+        key_role_weight = torch.ones(num_entities).cuda()
+        key_role_weight[-1] = 1
+        key_role_loss = F.cross_entropy(selected_pred_role_tensor[:,:-2].flatten(0, 1), selected_gold_role_tensor[:, :-2].flatten(0, 1), weight=key_role_weight)
+
+
+        rest_role_weight = torch.ones(num_entities).cuda()
+        rest_role_weight[-1] = 0.2
+        rest_role_loss = F.cross_entropy(selected_pred_role_tensor[:,-2:].flatten(0, 1), selected_gold_role_tensor[:, -2:].flatten(0, 1), weight=rest_role_weight)
+
+        role_loss = key_role_loss + rest_role_loss
 
         gold_event_label = torch.full(pred_event.shape[:1], self.num_classes -1, dtype=torch.int64).cuda()
         gold_event_label[indices_tensor[0]] = gold_event_tensor
         event_type_loss = F.cross_entropy(pred_event, gold_event_label, weight=self.type_weight)
 
-        # print(gold_event_label, '\t', pred_event.argmax(-1))
-        # print(indices_tensor)
-        # print(selected_gold_role_tensor, '\n', pred_role.argmax(-1))
+        if self.config.train_nopair_sets:
+            other_indices_tensor = torch.tensor([i for i in range(num_sets) if i not in indices_tensor[0]],
+                                                dtype=torch.int64)
+            other_pred_role_tensor = pred_role[other_indices_tensor]
+            other_gold_role_tensor = torch.full(other_pred_role_tensor.shape[:2], num_entities - 1,
+                                                dtype=torch.int64).cuda()
+            other_role_loss = F.cross_entropy(other_pred_role_tensor.flatten(0, 1),
+                                              other_gold_role_tensor.flatten(0, 1))
+            losses = event_type_loss + role_loss + 0.2 * other_role_loss
+        else:
+            losses = event_type_loss + role_loss
 
-        losses = event_type_loss + role_loss
-        # losses = role_loss
         return losses
