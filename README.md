@@ -10,7 +10,7 @@ Table of Contents
 ## Overview
 Code for the paper ["Document-level Event Extraction via Parallel Prediction Networks"](https://aclanthology.org/2021.acl-long.492/).
 An updated complete code, in which part of the code (i.e. Data preprocessing, sentence-level extraction and evaluation metrics following Doc2EDAG[https://github.com/dolphin-zs/Doc2EDAG]).
-A trained model can be downloaded via the link(https://pan.baidu.com/s/1iEfYEOUIzhOb4eH2OdM5ig\ password:u0h8) for reference.
+A trained model can be downloaded via the link(https://pan.baidu.com/s/1iEfYEOUIzhOb4eH2OdM5ig\ password:u0h8) for evaluation.
 
 Change `CUDA_VISIBLE_DEVICES` in `run.sh` and run:
 ```bash
