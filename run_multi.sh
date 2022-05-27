@@ -2,8 +2,8 @@
 
 set -vx
 
-CUDA="0,1,2,3"
-NUM_GPUS=4
+CUDA="0,1"
+NUM_GPUS=2
 
 {
     CUDA_VISIBLE_DEVICES=${CUDA} bash train_multi.sh ${NUM_GPUS} \
@@ -22,5 +22,6 @@ NUM_GPUS=4
         --test_file_name='test.json' \
         --train_on_multi_events=True \
         --train_on_single_event=True \
+        --num_event2role_decoder_layer=2 \
         --parallel_decorate
 }
